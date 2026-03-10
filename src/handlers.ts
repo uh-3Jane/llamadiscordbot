@@ -55,15 +55,20 @@ export async function handleMention(message: Message) {
     .trim()
     .toLowerCase();
 
-  if (content.startsWith("exempt")) {
+  if (content === "help" || content === "commands") {
+    await handleHelp(message);
+  } else if (content.startsWith("exempt")) {
     await handleExempt(message);
   } else if (content.startsWith("unexempt")) {
     await handleUnexempt(message);
   } else if (content === "status") {
     await handleStatus(message);
-  } else {
-    // Default: set this channel as mod log
+  } else if (content === "") {
+    // No command -- set this channel as mod log
     await handleSetChannel(message);
+  } else {
+    // Unknown command -- show help
+    await handleHelp(message);
   }
 }
 
@@ -158,6 +163,28 @@ async function handleStatus(message: Message) {
         .setColor(Colors.Blue)
         .setTitle("Bot Configuration")
         .setDescription(lines.join("\n")),
+    ],
+  });
+}
+
+async function handleHelp(message: Message) {
+  const botMention = `<@${message.client.user!.id}>`;
+
+  await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Blue)
+        .setTitle("Available Commands")
+        .setDescription(
+          [
+            `${botMention} -- Set this channel as the mod log`,
+            `${botMention} \`help\` -- Show this message`,
+            `${botMention} \`status\` -- Show current configuration`,
+            `${botMention} \`exempt\` \`@role\` -- Exempt a role from logging`,
+            `${botMention} \`unexempt\` \`@role\` -- Remove a role exemption`,
+          ].join("\n")
+        )
+        .setFooter({ text: "Only the server owner can use these commands." }),
     ],
   });
 }
