@@ -19,6 +19,9 @@ import {
 // Cache resolved mod log channels per guild so we don't search every time
 const modLogChannels = new Map<string, TextChannel | null>();
 
+// Track recently logged message IDs to prevent duplicates
+const recentlyLogged = new Set<string>();
+
 /**
  * Find the mod log channel in a guild by name.
  * Looks for channels matching any name in MOD_LOG_CHANNEL_NAMES.
@@ -76,6 +79,11 @@ export function handleMessageCreate(message: Message) {
 export async function handleMessageDelete(
   message: Message<boolean> | PartialMessage
 ) {
+  // Deduplicate -- skip if we already logged this message ID
+  if (recentlyLogged.has(message.id)) return;
+  recentlyLogged.add(message.id);
+  setTimeout(() => recentlyLogged.delete(message.id), 10_000);
+
   const cached = getCachedMessage(message.id);
 
   if (!cached) {
