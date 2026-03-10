@@ -45,13 +45,15 @@ interface DeletedBy {
  */
 async function getDeleter(guild: Guild, msg: CachedMessage): Promise<DeletedBy> {
   try {
-    // Brief delay to let Discord create the audit log entry
-    await new Promise((r) => setTimeout(r, 1000));
+    // Delay to let Discord create the audit log entry (needs 2-3s)
+    await new Promise((r) => setTimeout(r, 3000));
 
     const auditLogs = await guild.fetchAuditLogs({
       type: AuditLogEvent.MessageDelete,
-      limit: 5,
+      limit: 10,
     });
+
+    console.log(`[AUDIT] Fetched ${auditLogs.entries.size} audit log entries`);
 
     const entry = auditLogs.entries.find((e) => {
       if (e.target?.id !== msg.authorId) return false;
@@ -59,8 +61,13 @@ async function getDeleter(guild: Guild, msg: CachedMessage): Promise<DeletedBy> 
       const extra = e.extra as { channel?: { id: string }; count?: number } | null;
       if (extra?.channel?.id !== msg.channelId) return false;
 
-      // Only consider entries from the last 15 seconds
-      if (Date.now() - e.createdTimestamp > 15000) return false;
+      const age = Date.now() - e.createdTimestamp;
+      console.log(
+        `[AUDIT] Entry ${e.id}: executor=${e.executor?.tag}, target=${e.target?.tag}, count=${extra?.count}, age=${age}ms`
+      );
+
+      // Only consider entries from the last 30 seconds
+      if (age > 30000) return false;
 
       // Discord batches audit log entries: same mod deleting multiple messages
       // from the same user in the same channel increments 'count' on one entry.
