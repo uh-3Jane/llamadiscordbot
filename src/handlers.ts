@@ -2,9 +2,11 @@ import {
   Message,
   PartialMessage,
   TextChannel,
+  ChannelType,
   EmbedBuilder,
   Colors,
   AttachmentBuilder,
+  Guild,
 } from "discord.js";
 import { config } from "./config.js";
 import {
@@ -13,6 +15,43 @@ import {
   removeCachedMessage,
   type CachedMessage,
 } from "./cache.js";
+
+// Cache resolved mod log channels per guild so we don't search every time
+const modLogChannels = new Map<string, TextChannel | null>();
+
+/**
+ * Find the mod log channel in a guild by name.
+ * Looks for channels matching any name in MOD_LOG_CHANNEL_NAMES.
+ */
+function findModLogChannel(guild: Guild): TextChannel | null {
+  if (modLogChannels.has(guild.id)) {
+    return modLogChannels.get(guild.id)!;
+  }
+
+  const channel = guild.channels.cache.find(
+    (ch) =>
+      ch.type === ChannelType.GuildText &&
+      config.modLogChannelNames.includes(ch.name.toLowerCase())
+  ) as TextChannel | undefined;
+
+  modLogChannels.set(guild.id, channel || null);
+
+  if (channel) {
+    console.log(`[LOG] Found mod log channel #${channel.name} in "${guild.name}"`);
+  } else {
+    console.warn(
+      `[LOG] No mod log channel found in "${guild.name}". ` +
+        `Create a channel named one of: ${config.modLogChannelNames.join(", ")}`
+    );
+  }
+
+  return channel || null;
+}
+
+/** Clear cached mod log channel for a guild (e.g. if channels change) */
+export function clearModLogCache(guildId: string) {
+  modLogChannels.delete(guildId);
+}
 
 /**
  * Cache every incoming message so we have the content when it gets deleted.
@@ -32,21 +71,17 @@ export function handleMessageCreate(message: Message) {
 }
 
 /**
- * When a message is deleted, log it to the mod channel.
+ * When a message is deleted, log it to that server's mod log channel.
  */
 export async function handleMessageDelete(
   message: Message<boolean> | PartialMessage
 ) {
-  // Try the cache first (most reliable), fall back to Discord's partial cache
   const cached = getCachedMessage(message.id);
 
   if (!cached) {
-    // Message wasn't in our cache -- might be from before the bot started.
-    // Discord's own cache might have it if partials are enabled.
     if (!message.author || message.author.bot) return;
     if (!message.guild) return;
 
-    // Build a minimal cached object from whatever Discord gives us
     const fallback: CachedMessage = {
       id: message.id,
       content: message.content || "",
@@ -81,11 +116,10 @@ export async function handleMessageDelete(
         : [],
     };
 
-    await logDeletedMessage(message.client, fallback);
+    await logDeletedMessage(message.client, message.guild, fallback);
     return;
   }
 
-  // Check monitored channels
   if (
     config.monitoredChannels.length > 0 &&
     !config.monitoredChannels.includes(cached.channelId)
@@ -93,23 +127,25 @@ export async function handleMessageDelete(
     return;
   }
 
-  await logDeletedMessage(message.client, cached);
+  // Resolve guild from cached guildId
+  const guild = message.client.guilds.cache.get(cached.guildId);
+  if (!guild) return;
+
+  await logDeletedMessage(message.client, guild, cached);
   removeCachedMessage(message.id);
 }
 
 async function logDeletedMessage(
   client: import("discord.js").Client,
+  guild: Guild,
   msg: CachedMessage
 ) {
-  const modChannel = await client.channels.fetch(config.modLogChannelId);
-  if (!modChannel || !("send" in modChannel)) {
-    console.error("[LOG] Could not find mod log channel");
-    return;
-  }
+  const modChannel = findModLogChannel(guild);
+  if (!modChannel) return;
 
-  const channel = modChannel as TextChannel;
+  // Don't log deletions from the mod log channel itself
+  if (msg.channelId === modChannel.id) return;
 
-  // Build the embed
   const embed = new EmbedBuilder()
     .setColor(Colors.Red)
     .setTitle("Deleted Message")
@@ -124,9 +160,7 @@ async function logDeletedMessage(
     )
     .setTimestamp();
 
-  // Add message content
   if (msg.content) {
-    // Discord embed description max is 4096 chars
     embed.setDescription(
       msg.content.length > 4000
         ? msg.content.substring(0, 4000) + "... (truncated)"
@@ -136,15 +170,13 @@ async function logDeletedMessage(
     embed.setDescription("*(no text content)*");
   }
 
-  // Add embed URLs if the original message had any
   if (msg.embeds.length > 0) {
     const embedInfo = msg.embeds
       .map((e) => {
         const parts = [];
         if (e.title) parts.push(`**${e.title}**`);
         if (e.url) parts.push(e.url);
-        if (e.description)
-          parts.push(e.description.substring(0, 200));
+        if (e.description) parts.push(e.description.substring(0, 200));
         return parts.join("\n");
       })
       .join("\n\n");
@@ -157,7 +189,6 @@ async function logDeletedMessage(
     }
   }
 
-  // Add sticker info
   if (msg.stickers.length > 0) {
     embed.addFields({
       name: "Stickers",
@@ -165,7 +196,6 @@ async function logDeletedMessage(
     });
   }
 
-  // Try to re-download attachments (images, files) before Discord CDN expires
   const attachmentFiles: AttachmentBuilder[] = [];
   for (const att of msg.attachments) {
     try {
@@ -177,28 +207,28 @@ async function logDeletedMessage(
         );
       }
     } catch (err) {
-      // CDN link may have already expired
       console.error(`[LOG] Failed to download attachment ${att.name}:`, err);
     }
   }
 
-  // If we couldn't download some attachments, list them as text
   const failedAttachments = msg.attachments.filter(
     (_, i) => !attachmentFiles[i]
   );
   if (failedAttachments.length > 0) {
     embed.addFields({
       name: "Attachments (expired)",
-      value: failedAttachments.map((a) => `${a.name} (${a.contentType})`).join("\n"),
+      value: failedAttachments
+        .map((a) => `${a.name} (${a.contentType})`)
+        .join("\n"),
     });
   }
 
-  await channel.send({
+  await modChannel.send({
     embeds: [embed],
     files: attachmentFiles,
   });
 
   console.log(
-    `[LOG] Logged deleted message from @${msg.authorTag} in #${msg.channelName}`
+    `[LOG] Logged deleted message from @${msg.authorTag} in #${msg.channelName} (${guild.name})`
   );
 }

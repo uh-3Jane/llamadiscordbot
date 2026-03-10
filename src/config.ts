@@ -1,21 +1,18 @@
 export const config = {
   discordToken: process.env.DISCORD_TOKEN!,
-  modLogChannelId: process.env.MOD_LOG_CHANNEL_ID!,
+  modLogChannelNames: (
+    process.env.MOD_LOG_CHANNEL_NAMES || "mod-log,deleted-messages"
+  )
+    .split(",")
+    .map((n) => n.trim().toLowerCase()),
   monitoredChannels: process.env.MONITORED_CHANNELS
     ? process.env.MONITORED_CHANNELS.split(",").map((id) => id.trim())
     : [],
 };
 
 export function validateConfig() {
-  const missing: string[] = [];
-  if (!process.env.DISCORD_TOKEN) missing.push("DISCORD_TOKEN");
-  if (!process.env.MOD_LOG_CHANNEL_ID) missing.push("MOD_LOG_CHANNEL_ID");
-
-  if (missing.length > 0) {
-    console.error(
-      `Missing required environment variables: ${missing.join(", ")}`
-    );
-    console.error("Copy .env.example to .env and fill in the values.");
+  if (!process.env.DISCORD_TOKEN) {
+    console.error("Missing DISCORD_TOKEN. Copy .env.example to .env and fill it in.");
     process.exit(1);
   }
 }
