@@ -6,6 +6,7 @@ import {
   Colors,
   AttachmentBuilder,
   Guild,
+  AuditLogEvent,
 } from "discord.js";
 import { config } from "./config.js";
 import {
@@ -24,6 +25,89 @@ import {
 
 // Track recently logged message IDs to prevent duplicates
 const recentlyLogged = new Set<string>();
+
+// Track audit log entry counts to handle Discord's batched audit log entries
+// (Discord increments count on existing entries instead of creating new ones for bulk mod deletions)
+const auditLogTracker = new Map<string, number>();
+
+interface DeletedBy {
+  isMod: boolean;
+  userId: string;
+  userTag: string;
+  roleColor?: number;
+}
+
+/**
+ * Determine who deleted a message by checking the audit log.
+ * - If a mod deleted it, there will be a recent AuditLogEvent.MessageDelete entry.
+ * - If the user deleted their own message, no audit log entry exists.
+ * Requires the bot to have VIEW_AUDIT_LOG permission.
+ */
+async function getDeleter(guild: Guild, msg: CachedMessage): Promise<DeletedBy> {
+  try {
+    // Brief delay to let Discord create the audit log entry
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const auditLogs = await guild.fetchAuditLogs({
+      type: AuditLogEvent.MessageDelete,
+      limit: 5,
+    });
+
+    const entry = auditLogs.entries.find((e) => {
+      if (e.target?.id !== msg.authorId) return false;
+
+      const extra = e.extra as { channel?: { id: string }; count?: number } | null;
+      if (extra?.channel?.id !== msg.channelId) return false;
+
+      // Only consider entries from the last 15 seconds
+      if (Date.now() - e.createdTimestamp > 15000) return false;
+
+      // Discord batches audit log entries: same mod deleting multiple messages
+      // from the same user in the same channel increments 'count' on one entry.
+      // Track the count so we only attribute each increment once.
+      const currentCount = extra?.count || 1;
+      const lastCount = auditLogTracker.get(e.id) || 0;
+
+      if (currentCount > lastCount) {
+        auditLogTracker.set(e.id, currentCount);
+        return true;
+      }
+
+      return false;
+    });
+
+    if (entry && entry.executor && entry.executor.id !== msg.authorId) {
+      console.log(
+        `[AUDIT] Message deleted by mod: ${entry.executor.tag} (${entry.executor.id})`
+      );
+
+      // Fetch the mod's member info to get their role color
+      const member = await guild.members.fetch(entry.executor.id).catch(() => null);
+      const roleColor = member?.displayColor || undefined;
+
+      return {
+        isMod: true,
+        userId: entry.executor.id,
+        userTag: entry.executor.tag,
+        roleColor: roleColor && roleColor !== 0 ? roleColor : undefined,
+      };
+    }
+
+    console.log(`[AUDIT] Message self-deleted by: ${msg.authorTag}`);
+  } catch (err) {
+    console.log(
+      "[AUDIT] Could not fetch audit logs (bot may need VIEW_AUDIT_LOG permission):",
+      err
+    );
+  }
+
+  // Default: user deleted their own message
+  return {
+    isMod: false,
+    userId: msg.authorId,
+    userTag: msg.authorTag,
+  };
+}
 
 /**
  * Handle bot mentions -- setup commands.
@@ -91,7 +175,8 @@ async function handleSetChannel(message: Message) {
     .setTitle("Mod Log Configured")
     .setDescription(
       `Deleted messages will now be logged to <#${message.channelId}>.\n\n` +
-        `To change this, ping me in a different channel.`
+        `To change this, ping me in a different channel.\n` +
+        `**Note:** The bot needs \`View Audit Log\` permission to detect mod deletions.`
     )
     .setTimestamp();
 
@@ -215,86 +300,55 @@ export function handleMessageCreate(message: Message) {
   }
 
   cacheMessage(message);
+  console.log(
+    `[CACHE] Cached message ${message.id} from @${message.author.tag} in #${
+      "name" in message.channel ? (message.channel as TextChannel).name : "unknown"
+    }`
+  );
 }
 
 /**
  * When a message is deleted, log it to that server's mod log channel.
+ * Only logs messages that were in our custom cache (sent after bot started).
  */
 export async function handleMessageDelete(
   message: Message<boolean> | PartialMessage
 ) {
-  if (recentlyLogged.has(message.id)) return;
-  recentlyLogged.add(message.id);
-  setTimeout(() => recentlyLogged.delete(message.id), 30_000);
+  console.log(`[DELETE] messageDelete event fired for message ${message.id}`);
 
   const cached = getCachedMessage(message.id);
-
   if (!cached) {
-    if (!message.author || message.author.bot) return;
-    if (!message.guild) return;
-
-    const fallback: CachedMessage = {
-      id: message.id,
-      content: message.content || "",
-      authorId: message.author.id,
-      authorTag: message.author.tag,
-      authorDisplayName: message.author.displayName,
-      channelId: message.channelId,
-      channelName:
-        "name" in message.channel
-          ? (message.channel as TextChannel).name
-          : "unknown",
-      guildId: message.guild.id,
-      createdAt: message.createdAt ?? new Date(),
-      attachments: message.attachments
-        ? message.attachments.map((a) => ({
-            name: a.name,
-            url: a.url,
-            proxyURL: a.proxyURL,
-            contentType: a.contentType,
-            size: a.size,
-          }))
-        : [],
-      embeds: message.embeds
-        ? message.embeds.map((e) => ({
-            url: e.url,
-            title: e.title,
-            description: e.description,
-          }))
-        : [],
-      stickers: message.stickers
-        ? message.stickers.map((s) => ({ name: s.name, url: s.url }))
-        : [],
-      roleIds: message.member
-        ? [...message.member.roles.cache.keys()]
-        : [],
-    };
-
-    // Check exemption
-    if (isExempt(message.guild.id, fallback.roleIds)) return;
-
-    await logDeletedMessage(message.client, message.guild, fallback);
+    console.log(`[DELETE] Message ${message.id} not in cache, skipping`);
     return;
   }
+
+  // Remove from cache immediately to prevent any possibility of double-processing
+  removeCachedMessage(message.id);
+  console.log(
+    `[DELETE] Removed message ${message.id} from cache, processing deletion by @${cached.authorTag}`
+  );
 
   if (
     config.monitoredChannels.length > 0 &&
     !config.monitoredChannels.includes(cached.channelId)
   ) {
+    console.log(`[DELETE] Message ${message.id} not in monitored channels, skipping`);
     return;
   }
 
   // Check exemption
   if (isExempt(cached.guildId, cached.roleIds)) {
-    removeCachedMessage(message.id);
+    console.log(`[DELETE] Message ${message.id} from exempt user, skipping`);
     return;
   }
 
   const guild = message.client.guilds.cache.get(cached.guildId);
-  if (!guild) return;
+  if (!guild) {
+    console.log(`[DELETE] Guild ${cached.guildId} not found, skipping`);
+    return;
+  }
 
   await logDeletedMessage(message.client, guild, cached);
-  removeCachedMessage(message.id);
 }
 
 /**
@@ -312,10 +366,17 @@ async function logDeletedMessage(
   msg: CachedMessage
 ) {
   const modLogChannelId = getModLogChannelId(guild.id);
-  if (!modLogChannelId) return;
+  if (!modLogChannelId) {
+    console.log(`[LOG] No mod log channel set for "${guild.name}", skipping`);
+    return;
+  }
 
-  // Don't log the bot's own log messages being deleted
-  // (but DO log other users' messages deleted in the mod log channel)
+  console.log(
+    `[LOG] Processing deleted message ${msg.id} from @${msg.authorTag} in #${msg.channelName}`
+  );
+
+  // Determine who deleted the message (user self-delete vs mod delete)
+  const deletedBy = await getDeleter(guild, msg);
 
   const modChannel = await client.channels.fetch(modLogChannelId);
   if (!modChannel || !("send" in modChannel)) {
@@ -325,11 +386,30 @@ async function logDeletedMessage(
 
   const channel = modChannel as TextChannel;
 
+  // Color: mod's role color (or Gold fallback) for mod deletions, Red for self-deletions
+  let embedColor: number;
+  if (deletedBy.isMod) {
+    embedColor = deletedBy.roleColor || Colors.Gold;
+  } else {
+    embedColor = Colors.Red;
+  }
+
+  const deletedByLabel = deletedBy.isMod
+    ? `<@${deletedBy.userId}> (Mod)`
+    : `<@${msg.authorId}> (Self)`;
+
   const embed = new EmbedBuilder()
-    .setColor(Colors.Red)
-    .setTitle("Deleted Message")
+    .setColor(embedColor)
+    .setTitle(
+      `Message deleted by ${deletedBy.isMod ? deletedBy.userTag : msg.authorTag}`
+    )
     .addFields(
-      { name: "User", value: `<@${msg.authorId}> (${msg.authorTag})`, inline: true },
+      {
+        name: "Author",
+        value: `<@${msg.authorId}> (${msg.authorTag})`,
+        inline: true,
+      },
+      { name: "Deleted by", value: deletedByLabel, inline: true },
       { name: "Channel", value: `<#${msg.channelId}>`, inline: true },
       {
         name: "Posted at",
@@ -378,6 +458,7 @@ async function logDeletedMessage(
   const attachmentFiles: AttachmentBuilder[] = [];
   for (const att of msg.attachments) {
     try {
+      console.log(`[LOG] Downloading attachment: ${att.name}`);
       const response = await fetch(att.proxyURL || att.url);
       if (response.ok) {
         const buffer = Buffer.from(await response.arrayBuffer());
@@ -408,6 +489,8 @@ async function logDeletedMessage(
   });
 
   console.log(
-    `[LOG] Logged deleted message from @${msg.authorTag} in #${msg.channelName} (${guild.name})`
+    `[LOG] Logged deleted message from @${msg.authorTag} in #${msg.channelName} (${guild.name}) — deleted by ${
+      deletedBy.isMod ? `mod @${deletedBy.userTag}` : "self"
+    }`
   );
 }

@@ -1,7 +1,9 @@
 import {
   Client,
   GatewayIntentBits,
+  Partials,
   Events,
+  Options,
 } from "discord.js";
 import { config, validateConfig } from "./config.js";
 import {
@@ -18,7 +20,12 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
-  // No partials -- we use our own message cache
+  partials: [Partials.Message, Partials.Channel],
+  makeCache: Options.cacheWithLimits({
+    // Disable Discord.js's internal message cache entirely
+    // We use our own cache in cache.ts
+    MessageManager: 0,
+  }),
 });
 
 client.once(Events.ClientReady, (readyClient) => {
