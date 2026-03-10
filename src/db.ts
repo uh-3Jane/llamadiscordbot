@@ -20,6 +20,7 @@ db.exec(`
     user_id TEXT NOT NULL,
     user_name TEXT NOT NULL,
     summary TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
     status TEXT NOT NULL DEFAULT 'open',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_pinged_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -40,8 +41,8 @@ db.exec(`
 
 // Prepared statements
 const insertTicket = db.prepare(`
-  INSERT INTO tickets (channel_id, thread_id, message_id, user_id, user_name, summary)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO tickets (channel_id, thread_id, message_id, user_id, user_name, summary, category)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
 
 const getOpenTickets = db.prepare(`
@@ -85,6 +86,7 @@ export const ticketDb = {
     userId: string;
     userName: string;
     summary: string;
+    category: string;
   }) {
     return insertTicket.run(
       data.channelId,
@@ -92,7 +94,8 @@ export const ticketDb = {
       data.messageId,
       data.userId,
       data.userName,
-      data.summary
+      data.summary,
+      data.category
     );
   },
 
@@ -105,6 +108,7 @@ export const ticketDb = {
       user_id: string;
       user_name: string;
       summary: string;
+      category: string;
       status: string;
       created_at: string;
       last_pinged_at: string;
@@ -133,6 +137,7 @@ export const ticketDb = {
           user_id: string;
           user_name: string;
           summary: string;
+          category: string;
           status: string;
           ping_count: number;
         }

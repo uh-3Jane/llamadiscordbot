@@ -1,6 +1,6 @@
 import { Client, TextChannel, ThreadChannel } from "discord.js";
 import { ticketDb } from "./db.js";
-import { config } from "./config.js";
+import { config, getMentionsForCategory, getCategoryLabel } from "./config.js";
 
 const MAX_PINGS = 3; // Stop pinging after 3 follow-ups (72 hours)
 
@@ -20,7 +20,6 @@ async function checkStaleTickets(client: Client) {
   const staleTickets = ticketDb.getStaleTickets();
 
   for (const ticket of staleTickets) {
-    // Stop pinging after MAX_PINGS attempts
     if (ticket.ping_count >= MAX_PINGS) {
       console.log(
         `[REMINDERS] Ticket #${ticket.id} has been pinged ${ticket.ping_count} times, giving up`
@@ -29,22 +28,23 @@ async function checkStaleTickets(client: Client) {
       continue;
     }
 
+    const mentions = getMentionsForCategory(ticket.category);
+    const categoryLabel = getCategoryLabel(ticket.category);
+
     try {
-      // Try to send reminder in the support thread
       if (ticket.thread_id) {
         const channel = await client.channels.fetch(ticket.thread_id);
         if (channel && channel.isThread()) {
           const thread = channel as ThreadChannel;
 
-          // Check if thread is still active/unarchived
           if (thread.archived) {
             await thread.setArchived(false);
           }
 
           const reminderMsg = [
-            `**Reminder:** This support request from <@${ticket.user_id}> has not been resolved yet.`,
+            `**Reminder:** This ${categoryLabel} request from <@${ticket.user_id}> has not been resolved yet.`,
             "",
-            `<@&${config.supportRoleId}> -- this ticket has been open for ${ticket.ping_count * 24}+ hours.`,
+            `${mentions} -- this ticket has been open for ${ticket.ping_count * 24}+ hours.`,
             "",
             `**Original request:** ${ticket.summary}`,
             "",
@@ -55,17 +55,16 @@ async function checkStaleTickets(client: Client) {
           ticketDb.markPinged(ticket.id);
 
           console.log(
-            `[REMINDERS] Pinged ticket #${ticket.id} (ping ${ticket.ping_count + 1}/${MAX_PINGS})`
+            `[REMINDERS] Pinged ${categoryLabel} for ticket #${ticket.id} (ping ${ticket.ping_count + 1}/${MAX_PINGS})`
           );
         }
       } else {
-        // No thread -- send reminder in original channel
         const channel = await client.channels.fetch(ticket.channel_id);
         if (channel && "send" in channel) {
           const textChannel = channel as TextChannel;
           await textChannel.send(
-            `**Reminder:** <@${ticket.user_id}>'s support request has not been addressed. ` +
-              `<@&${config.supportRoleId}> please follow up.\n` +
+            `**Reminder:** <@${ticket.user_id}>'s ${categoryLabel} request has not been addressed. ` +
+              `${mentions} please follow up.\n` +
               `**Request:** ${ticket.summary}\n` +
               `_You can also email **${config.supportEmail}**_`
           );
