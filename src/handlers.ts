@@ -39,7 +39,14 @@ export async function handleMention(message: Message) {
   if (message.author.bot) return;
   if (!message.guild) return;
   if (!message.client.user) return;
-  if (!message.mentions.has(message.client.user)) return;
+  // Check if bot was mentioned by looking for <@BOT_ID> in message content
+  const botId = message.client.user.id;
+  if (
+    !message.content.includes(`<@${botId}>`) &&
+    !message.content.includes(`<@!${botId}>`)
+  ) {
+    return;
+  }
 
   console.log(
     `[MENTION] Bot mentioned by ${message.author.tag} (${message.author.id}), owner is ${message.guild.ownerId}`
@@ -307,7 +314,8 @@ async function logDeletedMessage(
   const modLogChannelId = getModLogChannelId(guild.id);
   if (!modLogChannelId) return;
 
-  if (msg.channelId === modLogChannelId) return;
+  // Don't log the bot's own log messages being deleted
+  // (but DO log other users' messages deleted in the mod log channel)
 
   const modChannel = await client.channels.fetch(modLogChannelId);
   if (!modChannel || !("send" in modChannel)) {
