@@ -2,7 +2,6 @@ import {
   Message,
   PartialMessage,
   TextChannel,
-  ChannelType,
   EmbedBuilder,
   Colors,
   AttachmentBuilder,
@@ -10,50 +9,157 @@ import {
 } from "discord.js";
 import { config } from "./config.js";
 import {
+  setModLogChannel,
+  getModLogChannelId,
+  addExemptRole,
+  removeExemptRole,
+  getExemptRoleIds,
+} from "./settings.js";
+import {
   cacheMessage,
   getCachedMessage,
   removeCachedMessage,
   type CachedMessage,
 } from "./cache.js";
 
-// Cache resolved mod log channels per guild so we don't search every time
-const modLogChannels = new Map<string, TextChannel | null>();
-
 // Track recently logged message IDs to prevent duplicates
 const recentlyLogged = new Set<string>();
 
 /**
- * Find the mod log channel in a guild by name.
- * Looks for channels matching any name in MOD_LOG_CHANNEL_NAMES.
+ * Handle bot mentions -- setup commands.
+ * Only the server owner can configure the bot.
+ *
+ * Commands (by pinging the bot):
+ *   @bot                     -- set this channel as mod log
+ *   @bot exempt @role        -- exempt a role from detection
+ *   @bot unexempt @role      -- remove a role exemption
+ *   @bot status              -- show current config
  */
-function findModLogChannel(guild: Guild): TextChannel | null {
-  if (modLogChannels.has(guild.id)) {
-    return modLogChannels.get(guild.id)!;
-  }
+export async function handleMention(message: Message) {
+  if (message.author.bot) return;
+  if (!message.guild) return;
+  if (!message.client.user) return;
+  if (!message.mentions.has(message.client.user)) return;
 
-  const channel = guild.channels.cache.find(
-    (ch) =>
-      ch.type === ChannelType.GuildText &&
-      config.modLogChannelNames.includes(ch.name.toLowerCase())
-  ) as TextChannel | undefined;
-
-  modLogChannels.set(guild.id, channel || null);
-
-  if (channel) {
-    console.log(`[LOG] Found mod log channel #${channel.name} in "${guild.name}"`);
-  } else {
-    console.warn(
-      `[LOG] No mod log channel found in "${guild.name}". ` +
-        `Create a channel named one of: ${config.modLogChannelNames.join(", ")}`
+  // Only server owner can configure
+  if (message.author.id !== message.guild.ownerId) {
+    await message.reply(
+      "Only the server owner can configure this bot."
     );
+    return;
   }
 
-  return channel || null;
+  // Parse the command after the mention
+  const content = message.content
+    .replace(/<@!?\d+>/g, "")
+    .trim()
+    .toLowerCase();
+
+  if (content.startsWith("exempt")) {
+    await handleExempt(message);
+  } else if (content.startsWith("unexempt")) {
+    await handleUnexempt(message);
+  } else if (content === "status") {
+    await handleStatus(message);
+  } else {
+    // Default: set this channel as mod log
+    await handleSetChannel(message);
+  }
 }
 
-/** Clear cached mod log channel for a guild (e.g. if channels change) */
-export function clearModLogCache(guildId: string) {
-  modLogChannels.delete(guildId);
+async function handleSetChannel(message: Message) {
+  setModLogChannel(message.guild!.id, message.channelId);
+
+  const embed = new EmbedBuilder()
+    .setColor(Colors.Green)
+    .setTitle("Mod Log Configured")
+    .setDescription(
+      `Deleted messages will now be logged to <#${message.channelId}>.\n\n` +
+        `To change this, ping me in a different channel.`
+    )
+    .setTimestamp();
+
+  await message.reply({ embeds: [embed] });
+  console.log(
+    `[SETUP] Mod log set to #${(message.channel as TextChannel).name} in "${message.guild!.name}"`
+  );
+}
+
+async function handleExempt(message: Message) {
+  const role = message.mentions.roles.first();
+  if (!role) {
+    await message.reply(
+      "Mention a role to exempt. Example: `@bot exempt @Moderators`"
+    );
+    return;
+  }
+
+  addExemptRole(message.guild!.id, role.id);
+
+  await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Green)
+        .setDescription(
+          `<@&${role.id}> is now exempt. Deleted messages from users with this role will be ignored.`
+        ),
+    ],
+  });
+
+  console.log(
+    `[SETUP] Exempted role "${role.name}" in "${message.guild!.name}"`
+  );
+}
+
+async function handleUnexempt(message: Message) {
+  const role = message.mentions.roles.first();
+  if (!role) {
+    await message.reply(
+      "Mention a role to un-exempt. Example: `@bot unexempt @Moderators`"
+    );
+    return;
+  }
+
+  removeExemptRole(message.guild!.id, role.id);
+
+  await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Orange)
+        .setDescription(
+          `<@&${role.id}> is no longer exempt. Their deleted messages will be logged.`
+        ),
+    ],
+  });
+
+  console.log(
+    `[SETUP] Un-exempted role "${role.name}" in "${message.guild!.name}"`
+  );
+}
+
+async function handleStatus(message: Message) {
+  const guildId = message.guild!.id;
+  const modLogId = getModLogChannelId(guildId);
+  const exemptRoles = getExemptRoleIds(guildId);
+
+  const lines = [
+    `**Mod log channel:** ${modLogId ? `<#${modLogId}>` : "Not set (ping me in a channel to set it)"}`,
+    "",
+    `**Exempt roles:** ${
+      exemptRoles.length > 0
+        ? exemptRoles.map((id) => `<@&${id}>`).join(", ")
+        : "None"
+    }`,
+  ];
+
+  await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Blue)
+        .setTitle("Bot Configuration")
+        .setDescription(lines.join("\n")),
+    ],
+  });
 }
 
 /**
@@ -79,10 +185,9 @@ export function handleMessageCreate(message: Message) {
 export async function handleMessageDelete(
   message: Message<boolean> | PartialMessage
 ) {
-  // Deduplicate -- skip if we already logged this message ID
   if (recentlyLogged.has(message.id)) return;
   recentlyLogged.add(message.id);
-  setTimeout(() => recentlyLogged.delete(message.id), 10_000);
+  setTimeout(() => recentlyLogged.delete(message.id), 30_000);
 
   const cached = getCachedMessage(message.id);
 
@@ -122,7 +227,13 @@ export async function handleMessageDelete(
       stickers: message.stickers
         ? message.stickers.map((s) => ({ name: s.name, url: s.url }))
         : [],
+      roleIds: message.member
+        ? [...message.member.roles.cache.keys()]
+        : [],
     };
+
+    // Check exemption
+    if (isExempt(message.guild.id, fallback.roleIds)) return;
 
     await logDeletedMessage(message.client, message.guild, fallback);
     return;
@@ -135,7 +246,12 @@ export async function handleMessageDelete(
     return;
   }
 
-  // Resolve guild from cached guildId
+  // Check exemption
+  if (isExempt(cached.guildId, cached.roleIds)) {
+    removeCachedMessage(message.id);
+    return;
+  }
+
   const guild = message.client.guilds.cache.get(cached.guildId);
   if (!guild) return;
 
@@ -143,16 +259,32 @@ export async function handleMessageDelete(
   removeCachedMessage(message.id);
 }
 
+/**
+ * Check if a user's roles include any exempt role for this guild.
+ */
+function isExempt(guildId: string, userRoleIds: string[]): boolean {
+  const exemptRoles = getExemptRoleIds(guildId);
+  if (exemptRoles.length === 0) return false;
+  return userRoleIds.some((roleId) => exemptRoles.includes(roleId));
+}
+
 async function logDeletedMessage(
   client: import("discord.js").Client,
   guild: Guild,
   msg: CachedMessage
 ) {
-  const modChannel = findModLogChannel(guild);
-  if (!modChannel) return;
+  const modLogChannelId = getModLogChannelId(guild.id);
+  if (!modLogChannelId) return;
 
-  // Don't log deletions from the mod log channel itself
-  if (msg.channelId === modChannel.id) return;
+  if (msg.channelId === modLogChannelId) return;
+
+  const modChannel = await client.channels.fetch(modLogChannelId);
+  if (!modChannel || !("send" in modChannel)) {
+    console.error(`[LOG] Could not find mod log channel for "${guild.name}"`);
+    return;
+  }
+
+  const channel = modChannel as TextChannel;
 
   const embed = new EmbedBuilder()
     .setColor(Colors.Red)
@@ -231,9 +363,9 @@ async function logDeletedMessage(
     });
   }
 
-  await modChannel.send({
+  await channel.send({
     embeds: [embed],
-    files: attachmentFiles,
+    ...(attachmentFiles.length > 0 ? { files: attachmentFiles } : {}),
   });
 
   console.log(

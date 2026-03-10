@@ -19,6 +19,7 @@ type CachedMessage = {
   }>;
   embeds: Array<{ url: string | null; title: string | null; description: string | null }>;
   stickers: Array<{ name: string; url: string }>;
+  roleIds: string[];
 };
 
 // In-memory cache with a max size to prevent unbounded growth
@@ -59,6 +60,9 @@ export function cacheMessage(message: Message) {
       name: s.name,
       url: s.url,
     })),
+    roleIds: message.member
+      ? [...message.member.roles.cache.keys()]
+      : [],
   };
 
   // Evict oldest if at capacity

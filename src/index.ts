@@ -1,14 +1,13 @@
 import {
   Client,
   GatewayIntentBits,
-  Partials,
   Events,
 } from "discord.js";
 import { config, validateConfig } from "./config.js";
 import {
   handleMessageCreate,
   handleMessageDelete,
-  clearModLogCache,
+  handleMention,
 } from "./handlers.js";
 
 validateConfig();
@@ -19,42 +18,32 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Message, Partials.Channel],
+  // No partials -- we use our own message cache
 });
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
-  console.log(
-    `Looking for mod log channels named: ${config.modLogChannelNames.join(", ")}`
-  );
   console.log(`Connected to ${readyClient.guilds.cache.size} server(s)`);
   readyClient.guilds.cache.forEach((guild) => {
     console.log(`  - ${guild.name} (${guild.id})`);
   });
+  console.log("Ping me in a channel to set it as the mod log output.");
   console.log("Bot is ready.");
 });
 
-// Cache every message
-client.on(Events.MessageCreate, handleMessageCreate);
+client.on(Events.MessageCreate, (message) => {
+  // Check if the bot was mentioned (setup command)
+  handleMention(message);
+  // Cache the message for deleted message tracking
+  handleMessageCreate(message);
+});
 
-// Log deleted messages
 client.on(Events.MessageDelete, async (message) => {
   try {
     await handleMessageDelete(message);
   } catch (err) {
     console.error("Error handling deleted message:", err);
   }
-});
-
-// Re-scan for mod log channel if channels are created/updated/deleted
-client.on(Events.ChannelCreate, (channel) => {
-  if ("guild" in channel && channel.guild) clearModLogCache(channel.guild.id);
-});
-client.on(Events.ChannelUpdate, (_, channel) => {
-  if ("guild" in channel && channel.guild) clearModLogCache(channel.guild.id);
-});
-client.on(Events.ChannelDelete, (channel) => {
-  if ("guild" in channel && channel.guild) clearModLogCache(channel.guild.id);
 });
 
 client.login(config.discordToken);
