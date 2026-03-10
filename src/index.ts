@@ -2,14 +2,10 @@ import {
   Client,
   GatewayIntentBits,
   Partials,
-  REST,
-  Routes,
   Events,
 } from "discord.js";
 import { config, validateConfig } from "./config.js";
-import { handleMessage, handleThreadReply } from "./handlers.js";
-import { handleCommand, commands } from "./commands.js";
-import { startReminderLoop } from "./reminders.js";
+import { handleMessageCreate, handleMessageDelete } from "./handlers.js";
 
 validateConfig();
 
@@ -18,68 +14,30 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
   ],
   partials: [Partials.Message, Partials.Channel],
 });
 
-// Register slash commands on startup
-client.once(Events.ClientReady, async (readyClient) => {
+client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
-
-  // Register slash commands
-  const rest = new REST({ version: "10" }).setToken(config.discordToken);
-  try {
-    await rest.put(Routes.applicationCommands(readyClient.user.id), {
-      body: commands.map((c) => c.toJSON()),
-    });
-    console.log("Slash commands registered");
-  } catch (err) {
-    console.error("Failed to register slash commands:", err);
-  }
-
-  // Start the 24h reminder loop
-  startReminderLoop(client);
-
-  console.log("Bot is ready.");
+  console.log(`Logging deleted messages to channel ${config.modLogChannelId}`);
   if (config.monitoredChannels.length > 0) {
     console.log(`Monitoring channels: ${config.monitoredChannels.join(", ")}`);
   } else {
     console.log("Monitoring all channels");
   }
+  console.log("Bot is ready.");
 });
 
-// Handle new messages
-client.on(Events.MessageCreate, async (message) => {
-  try {
-    if (message.channel.isThread()) {
-      await handleThreadReply(message);
-    } else {
-      await handleMessage(message);
-    }
-  } catch (err) {
-    console.error("Error handling message:", err);
-  }
-});
+// Cache every message as it comes in
+client.on(Events.MessageCreate, handleMessageCreate);
 
-// Handle slash commands
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+// Log deleted messages to the mod channel
+client.on(Events.MessageDelete, async (message) => {
   try {
-    await handleCommand(interaction);
+    await handleMessageDelete(message);
   } catch (err) {
-    console.error("Error handling command:", err);
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({
-        content: "Something went wrong.",
-        ephemeral: true,
-      });
-    } else {
-      await interaction.reply({
-        content: "Something went wrong.",
-        ephemeral: true,
-      });
-    }
+    console.error("Error handling deleted message:", err);
   }
 });
 
