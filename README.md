@@ -5,10 +5,12 @@ Logs deleted messages to a mod channel so your team can review them and take act
 ## Features
 
 - **Deleted message logging** -- When anyone deletes a message, the bot copies the full content (text, images, links, embeds, stickers) to a designated mod channel
-- **User attribution** -- Each log includes the poster's @mention and Discord tag so mods can ban if needed
+- **Mod vs self-deletion detection** -- Uses audit logs to show whether a message was deleted by a mod or by the user themselves, with color-coded embeds
+- **Per-server configuration** -- Each server's mod log channel is set by the server owner via `@bot` mention commands
+- **Role exemptions** -- Exempt specific roles (e.g. team members) from being logged
 - **Attachment recovery** -- Attempts to re-download images and files before Discord's CDN expires
 - **In-memory message cache** -- Caches the last 10,000 messages so deleted content is always available
-- **Channel filtering** -- Optionally monitor only specific channels
+- **Multi-server support** -- One bot instance works across multiple servers with independent settings
 
 ## Setup
 
@@ -20,14 +22,10 @@ Logs deleted messages to a mod channel so your team can review them and take act
 4. Enable **Message Content Intent** under Privileged Gateway Intents
 5. Go to **OAuth2 > URL Generator**, select:
    - Scopes: `bot`
-   - Permissions: `Send Messages`, `Read Message History`, `Embed Links`, `Attach Files`
+   - Permissions: `Send Messages`, `Read Message History`, `Embed Links`, `Attach Files`, `View Audit Log`
 6. Copy the generated URL and invite the bot to your server
 
-### 2. Create a mod log channel
-
-Create a private channel in your Discord server (e.g. `#deleted-messages`) that only mods can see. Right-click it and **Copy Channel ID** (requires Developer Mode: User Settings > Advanced).
-
-### 3. Configure
+### 2. Configure
 
 ```bash
 cp .env.example .env
@@ -35,19 +33,13 @@ cp .env.example .env
 
 Fill in `.env`:
 - `DISCORD_TOKEN` -- your bot token
-- `MOD_LOG_CHANNEL_ID` -- the channel ID for deleted message logs
-- `MONITORED_CHANNELS` -- (optional) comma-separated channel IDs to monitor
+- `MONITORED_CHANNELS` -- (optional) comma-separated channel IDs to monitor. Leave empty to monitor all channels.
 
-### 4. Install & Run
+### 3. Install & Run
 
 ```bash
 bun install
 bun run start
-```
-
-For development with auto-reload:
-```bash
-bun run dev
 ```
 
 With Docker:
@@ -55,16 +47,43 @@ With Docker:
 docker compose up --build
 ```
 
+### 4. Set up the mod log channel
+
+Once the bot is online, the **server owner** pings the bot in the channel they want to use as the mod log:
+
+```
+@BotName
+```
+
+The bot will confirm and start logging deleted messages there.
+
+## Bot Commands
+
+All commands are issued by mentioning the bot. Only the **server owner** can use these.
+
+| Command | Description |
+|---------|-------------|
+| `@bot` | Set the current channel as the mod log |
+| `@bot exempt @role` | Exempt a role from deletion logging |
+| `@bot unexempt @role` | Remove a role exemption |
+| `@bot status` | Show current mod log channel and exempt roles |
+| `@bot help` | Show available commands |
+
 ## How It Works
 
 ```
 User sends message --> cached in memory (last 10k messages)
          |
-   User deletes it
+   Message is deleted
          |
-   Bot copies to #mod-log:
+   Bot checks audit log:
+   - Mod deleted it? --> Gold embed, shows which mod
+   - Self-deleted?   --> Red embed
+         |
+   Bot posts to #mod-log:
    - Full text content
-   - @user mention + tag
+   - Author @mention + tag
+   - Who deleted it (mod or self)
    - Re-uploaded images/files
    - Original channel + timestamp
    - Embed URLs/links
