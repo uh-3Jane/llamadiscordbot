@@ -31,9 +31,13 @@ client.once(Events.ClientReady, (readyClient) => {
   console.log("Bot is ready.");
 });
 
-client.on(Events.MessageCreate, (message) => {
-  // Check if the bot was mentioned (setup command)
-  handleMention(message);
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    // Check if the bot was mentioned (setup command)
+    await handleMention(message);
+  } catch (err) {
+    console.error("Error handling mention:", err);
+  }
   // Cache the message for deleted message tracking
   handleMessageCreate(message);
 });

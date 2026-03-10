@@ -41,6 +41,10 @@ export async function handleMention(message: Message) {
   if (!message.client.user) return;
   if (!message.mentions.has(message.client.user)) return;
 
+  console.log(
+    `[MENTION] Bot mentioned by ${message.author.tag} (${message.author.id}), owner is ${message.guild.ownerId}`
+  );
+
   // Only server owner can configure
   if (message.author.id !== message.guild.ownerId) {
     await message.reply(
