@@ -11,6 +11,7 @@ import {
   handleMessageDelete,
   handleMention,
 } from "./handlers.js";
+import { handleGuildMemberAdd } from "./welcome.js";
 
 validateConfig();
 
@@ -20,6 +21,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildMembers,
   ],
   partials: [Partials.Message, Partials.Channel],
   makeCache: Options.cacheWithLimits({
@@ -55,6 +57,14 @@ client.on(Events.MessageDelete, async (message) => {
     await handleMessageDelete(message);
   } catch (err) {
     console.error("Error handling deleted message:", err);
+  }
+});
+
+client.on(Events.GuildMemberAdd, async (member) => {
+  try {
+    await handleGuildMemberAdd(member);
+  } catch (err) {
+    console.error("Error handling new member:", err);
   }
 });
 

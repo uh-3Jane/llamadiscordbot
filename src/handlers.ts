@@ -15,6 +15,12 @@ import {
   addExemptRole,
   removeExemptRole,
   getExemptRoleIds,
+  setWelcomeDmEnabled,
+  isWelcomeDmEnabled,
+  setWelcomeDmTitle,
+  getWelcomeDmTitle,
+  setWelcomeDmMessage,
+  getWelcomeDmMessage,
 } from "./settings.js";
 import {
   cacheMessage,
@@ -163,6 +169,16 @@ export async function handleMention(message: Message) {
     await handleExempt(message);
   } else if (content.startsWith("unexempt")) {
     await handleUnexempt(message);
+  } else if (content === "welcome on") {
+    await handleWelcomeToggle(message, true);
+  } else if (content === "welcome off") {
+    await handleWelcomeToggle(message, false);
+  } else if (content === "welcome preview") {
+    await handleWelcomePreview(message);
+  } else if (content.startsWith("set-welcome-title ")) {
+    await handleSetWelcomeTitle(message);
+  } else if (content.startsWith("set-welcome ")) {
+    await handleSetWelcomeMessage(message);
   } else if (content === "status") {
     await handleStatus(message);
   } else if (content === "") {
@@ -249,6 +265,7 @@ async function handleStatus(message: Message) {
   const guildId = message.guild!.id;
   const modLogId = getModLogChannelId(guildId);
   const exemptRoles = getExemptRoleIds(guildId);
+  const welcomeEnabled = isWelcomeDmEnabled(guildId);
 
   const lines = [
     `**Mod log channel:** ${modLogId ? `<#${modLogId}>` : "Not set (ping me in a channel to set it)"}`,
@@ -258,6 +275,8 @@ async function handleStatus(message: Message) {
         ? exemptRoles.map((id) => `<@&${id}>`).join(", ")
         : "None"
     }`,
+    "",
+    `**Welcome DMs:** ${welcomeEnabled ? "Enabled" : "Disabled"}`,
   ];
 
   await message.reply({
@@ -280,16 +299,128 @@ async function handleHelp(message: Message) {
         .setTitle("Available Commands")
         .setDescription(
           [
+            "**Delete Logging**",
             `${botMention} -- Set this channel as the mod log`,
-            `${botMention} \`help\` -- Show this message`,
-            `${botMention} \`status\` -- Show current configuration`,
             `${botMention} \`exempt\` \`@role\` -- Exempt a role from logging`,
             `${botMention} \`unexempt\` \`@role\` -- Remove a role exemption`,
+            "",
+            "**Welcome DMs**",
+            `${botMention} \`welcome on\` -- Enable welcome DMs for new members`,
+            `${botMention} \`welcome off\` -- Disable welcome DMs`,
+            `${botMention} \`welcome preview\` -- Preview the welcome DM`,
+            `${botMention} \`set-welcome\` \`<message>\` -- Set custom DM message`,
+            `${botMention} \`set-welcome-title\` \`<title>\` -- Set custom DM title`,
+            "",
+            "**General**",
+            `${botMention} \`status\` -- Show current configuration`,
+            `${botMention} \`help\` -- Show this message`,
           ].join("\n")
         )
         .setFooter({ text: "Only the server owner can use these commands." }),
     ],
   });
+}
+
+async function handleWelcomeToggle(message: Message, enabled: boolean) {
+  setWelcomeDmEnabled(message.guild!.id, enabled);
+  await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(enabled ? Colors.Green : Colors.Orange)
+        .setDescription(
+          enabled
+            ? "Welcome DMs are now **enabled**. New members will receive a safety warning DM when they join."
+            : "Welcome DMs are now **disabled**."
+        ),
+    ],
+  });
+  console.log(
+    `[SETUP] Welcome DMs ${enabled ? "enabled" : "disabled"} in "${message.guild!.name}"`
+  );
+}
+
+async function handleSetWelcomeMessage(message: Message) {
+  // Get the raw content after the mention, preserving original case
+  const raw = message.content.replace(/<@!?\d+>/g, "").trim();
+  const text = raw.replace(/^set-welcome\s+/i, "");
+
+  if (!text) {
+    await message.reply(
+      "Provide a message. Example: `@bot set-welcome No team member will ever DM you first...`"
+    );
+    return;
+  }
+
+  setWelcomeDmMessage(message.guild!.id, text);
+  await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Green)
+        .setDescription(
+          "Welcome DM message updated. Use `@bot welcome preview` to see how it looks."
+        ),
+    ],
+  });
+  console.log(`[SETUP] Welcome DM message updated in "${message.guild!.name}"`);
+}
+
+async function handleSetWelcomeTitle(message: Message) {
+  const raw = message.content.replace(/<@!?\d+>/g, "").trim();
+  const title = raw.replace(/^set-welcome-title\s+/i, "");
+
+  if (!title) {
+    await message.reply(
+      "Provide a title. Example: `@bot set-welcome-title Stay Safe!`"
+    );
+    return;
+  }
+
+  setWelcomeDmTitle(message.guild!.id, title);
+  await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Green)
+        .setDescription(
+          `Welcome DM title updated to: **${title}**`
+        ),
+    ],
+  });
+  console.log(`[SETUP] Welcome DM title updated in "${message.guild!.name}"`);
+}
+
+async function handleWelcomePreview(message: Message) {
+  const guildId = message.guild!.id;
+  const title = getWelcomeDmTitle(guildId);
+  const body = getWelcomeDmMessage(guildId);
+  const enabled = isWelcomeDmEnabled(guildId);
+
+  const embed = new EmbedBuilder()
+    .setColor(Colors.DarkGold)
+    .setAuthor({
+      name: message.guild!.name,
+      iconURL: message.guild!.iconURL() || undefined,
+    })
+    .setTitle(title)
+    .setDescription(body)
+    .setFooter({ text: `Sent from server: ${message.guild!.name}` })
+    .setTimestamp();
+
+  try {
+    await message.author.send({ embeds: [embed] });
+    await message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(Colors.Blue)
+          .setDescription(
+            `Preview sent to your DMs.${!enabled ? "\n\n**Note:** Welcome DMs are currently disabled. Use \`@bot welcome on\` to enable." : ""}`
+          ),
+      ],
+    });
+  } catch {
+    await message.reply(
+      "Could not send you a DM. Make sure your DMs are open for this server."
+    );
+  }
 }
 
 /**
