@@ -1,0 +1,12 @@
+app = "llamabot-discord"
+primary_region = "syd"
+
+[build]
+
+[env]
+  MOD_LOG_CHANNEL_ID = ""
+  MONITORED_CHANNELS = ""
+
+[mounts]
+  source = "bot_data"
+  destination = "/app/data"
